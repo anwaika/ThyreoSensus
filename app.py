@@ -278,64 +278,40 @@ def build_input_vector(ecg_dict, age, sex, ethnicity, race, caffeine_mg, activit
 # ============================================================
 # CLINICAL DECISION & CONFOUNDER ENGINE
 # ============================================================
-def evaluate_clinical_screening(probs, ecg_feats, caffeine_mg, activity_level, sensitivity_mode="Balanced"):
-    p_euth, p_hypo, p_hyper = probs[0], probs[1], probs[2]
+# ============================================================
+# CLINICAL DECISION — uses the model's REAL prediction, not
+# hand-picked thresholds. Confounder notes are advisory only
+# and never override the actual class prediction.
+# ============================================================
+def evaluate_clinical_screening(probs, ecg_feats, caffeine_mg, activity_level):
+    pred_idx = int(np.argmax(probs))  # trust the validated model directly
+    status = CLASS_NAMES[pred_idx]
+
     hr = ecg_feats.get("ECPRATE", 75.0)
-    pr = ecg_feats.get("ECPPR", 160.0)
-    qt = ecg_feats.get("ECPQT", 400.0)
-
-    # Thresholds based on sensitivity mode
-    if sensitivity_mode == "High Sensitivity (Screening Alert)":
-        th_hypo, th_hyper = 0.25, 0.16
-    elif sensitivity_mode == "High Specificity (Confirmation)":
-        th_hypo, th_hyper = 0.40, 0.30
-    else: # Balanced
-        th_hypo, th_hyper = 0.30, 0.22
-
-    # Confounder checks
     is_athlete = (activity_level == 3)
     is_high_caffeine = (caffeine_mg >= 250.0)
     is_sedentary = (activity_level == 0)
 
     confounder_notes = []
-    
-    # Athletic Bradycardia Disentanglement
     if hr < 60.0 and is_athlete:
-        confounder_notes.append("🏃 **Physiological Athletic Bradycardia**: Low resting heart rate is consistent with high vagal tone/conditioning rather than hypothyroid chronotropic suppression.")
+        confounder_notes.append(
+            "Note: low HR may reflect athletic conditioning rather than thyroid "
+            "suppression — model was not trained on activity data, this is advisory only."
+        )
     elif hr < 60.0 and is_sedentary:
-        confounder_notes.append("⚠️ **Sedentary Bradycardia Alert**: Resting heart rate < 60 bpm in non-active individual warrants thyroid function evaluation.")
+        confounder_notes.append("Note: low resting HR in a sedentary profile — consider clinical correlation.")
 
-    # Caffeine Tachycardia Disentanglement
     if hr > 95.0 and is_high_caffeine:
-        confounder_notes.append("☕ **Caffeine-Induced Chronotropy**: Tachycardia is substantially confounded by high stimulant/caffeine intake (>250 mg/day).")
-    elif hr > 95.0 and caffeine_mg < 100.0:
-        confounder_notes.append("⚠️ **Unexplained Sinus Tachycardia**: Elevated resting heart rate in the absence of high caffeine intake suggests potential thyrotoxic autonomic activation.")
+        confounder_notes.append(
+            "Note: elevated HR may partly reflect caffeine intake — model was not "
+            "trained on caffeine data, this is advisory only."
+        )
+    elif hr > 95.0 and not is_high_caffeine:
+        confounder_notes.append("Note: elevated resting HR without high caffeine intake — consider clinical correlation.")
 
-    # Decision logic
-    if p_hyper >= th_hyper and p_hyper > p_hypo and not (hr > 95.0 and is_high_caffeine and p_hyper < 0.38):
-        status = "Hyperthyroid"
-        tier = "High Suspicion / Screening Alert: Hyperthyroidism"
-        css = "status-danger"
-    elif p_hypo >= th_hypo and not (hr < 60.0 and is_athlete and p_hypo < 0.42):
-        status = "Hypothyroid"
-        tier = "High Suspicion / Screening Alert: Hypothyroidism"
-        css = "status-warning"
-    else:
-        # Check borderline / subclinical risk
-        if p_hypo >= 0.22 and not (hr < 60.0 and is_athlete):
-            status = "Euthyroid"
-            tier = "Borderline / Moderate Risk of Hypothyroidism"
-            css = "status-warning"
-        elif p_hyper >= 0.16 and not (hr > 95.0 and is_high_caffeine):
-            status = "Euthyroid"
-            tier = "Borderline / Moderate Risk of Hyperthyroidism"
-            css = "status-warning"
-        else:
-            status = "Euthyroid"
-            tier = "Normal / Low Thyroid Risk (Euthyroid)"
-            css = "status-normal"
-
-    return status, tier, css, confounder_notes
+    css_map = {"Euthyroid": "status-normal", "Hypothyroid": "status-warning", "Hyperthyroid": "status-danger"}
+    tier = f"Model prediction: {status} (P={probs[pred_idx]*100:.1f}%)"
+    return status, tier, css_map[status], confounder_notes
 
 # ============================================================
 # MAIN APPLICATION
