@@ -278,39 +278,83 @@ def build_input_vector(ecg_dict, age, sex, ethnicity, race, caffeine_mg, activit
 # ============================================================
 # CLINICAL DECISION & CONFOUNDER ENGINE
 # ============================================================
-# ============================================================
-# CLINICAL DECISION — uses the model's REAL prediction, not
-# hand-picked thresholds. Confounder notes are advisory only
-# and never override the actual class prediction.
-# ============================================================
-def evaluate_clinical_screening(probs, ecg_feats, caffeine_mg, activity_level):
-    pred_idx = int(np.argmax(probs))  # trust the validated model directly
+def evaluate_clinical_screening(
+    probs,
+    ecg_feats,
+    caffeine_mg,
+    activity_level
+):
+    """
+    Uses the deployed model's actual probability output.
+    Confounder notes are advisory only and never override
+    the model prediction.
+    """
+
+    # Make sure probabilities are numeric
+    probs = np.asarray(probs, dtype=float)
+
+    # Normalize if necessary
+    if probs.sum() > 0:
+        probs = probs / probs.sum()
+
+    # Actual model prediction
+    pred_idx = int(np.argmax(probs))
     status = CLASS_NAMES[pred_idx]
 
-    hr = ecg_feats.get("ECPRATE", 75.0)
-    is_athlete = (activity_level == 3)
-    is_high_caffeine = (caffeine_mg >= 250.0)
-    is_sedentary = (activity_level == 0)
+    # ECG / lifestyle information
+    hr = float(ecg_feats.get("ECPRATE", 75.0))
+
+    is_athlete = activity_level == 3
+    is_high_caffeine = caffeine_mg >= 250.0
+    is_sedentary = activity_level == 0
 
     confounder_notes = []
+
+    # --------------------------------------------------------
+    # Low heart rate
+    # --------------------------------------------------------
     if hr < 60.0 and is_athlete:
         confounder_notes.append(
-            "Note: low HR may reflect athletic conditioning rather than thyroid "
-            "suppression — model was not trained on activity data, this is advisory only."
+            "Low heart rate may be associated with athletic conditioning. "
+            "This is an advisory physiological note and does not override "
+            "the model prediction."
         )
-    elif hr < 60.0 and is_sedentary:
-        confounder_notes.append("Note: low resting HR in a sedentary profile — consider clinical correlation.")
 
+    elif hr < 60.0 and is_sedentary:
+        confounder_notes.append(
+            "Low resting heart rate was detected in a sedentary profile. "
+            "Clinical correlation may be appropriate."
+        )
+
+    # --------------------------------------------------------
+    # High heart rate
+    # --------------------------------------------------------
     if hr > 95.0 and is_high_caffeine:
         confounder_notes.append(
-            "Note: elevated HR may partly reflect caffeine intake — model was not "
-            "trained on caffeine data, this is advisory only."
+            "Elevated heart rate may partly reflect caffeine intake. "
+            "This is an advisory note and does not override the model prediction."
         )
-    elif hr > 95.0 and not is_high_caffeine:
-        confounder_notes.append("Note: elevated resting HR without high caffeine intake — consider clinical correlation.")
 
-    css_map = {"Euthyroid": "status-normal", "Hypothyroid": "status-warning", "Hyperthyroid": "status-danger"}
-    tier = f"Model prediction: {status} (P={probs[pred_idx]*100:.1f}%)"
+    elif hr > 95.0 and not is_high_caffeine:
+        confounder_notes.append(
+            "Elevated resting heart rate was detected without high "
+            "reported caffeine intake. Clinical correlation may be appropriate."
+        )
+
+    # --------------------------------------------------------
+    # Display style
+    # --------------------------------------------------------
+    css_map = {
+        "Euthyroid": "status-normal",
+        "Hypothyroid": "status-warning",
+        "Hyperthyroid": "status-danger"
+    }
+
+    tier = (
+        f"Model prediction: {status} "
+        f"(P={probs[pred_idx] * 100:.1f}%)"
+    )
+
     return status, tier, css_map[status], confounder_notes
 
 # ============================================================
@@ -473,8 +517,11 @@ if app_mode == "🔬 Single Patient Screening":
             
             probs = model.predict_proba(X_input)[0]
             pred_state, tier_label, css_class, confounder_notes = evaluate_clinical_screening(
-                probs, ecg_dict_final, caffeine_in, activity_level_in, sensitivity_mode=sensitivity_mode
-            )
+    probs,
+    ecg_dict_final,
+    caffeine_in,
+    activity_level_in
+)
             
             # SHAP
             shap_values = explainer.shap_values(X_input)
